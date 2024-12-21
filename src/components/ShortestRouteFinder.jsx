@@ -1,20 +1,21 @@
 import React, { useEffect, useRef, useState } from 'react';
 import mapboxgl from 'mapbox-gl';
 import MapboxDraw from '@mapbox/mapbox-gl-draw';
+import { Graph, alg } from 'graphlib'; // Import both Graph and alg from graphlib
 
 mapboxgl.accessToken = process.env.REACT_APP_MAPBOX_TOKEN;
 
-const Module2 = () => {
+const ShortestRouteFinder = () => {
   const mapContainerRef = useRef(null);
   const [map, setMap] = useState(null);
   const [draw, setDraw] = useState(null);
   const [routes, setRoutes] = useState([]);
   const [selectedRoute, setSelectedRoute] = useState(null);
-  
+
   // States for source and destination coordinates
   const [sourceCoordinates, setSourceCoordinates] = useState('');
   const [destinationCoordinates, setDestinationCoordinates] = useState('');
-  
+
   const [viewport, setViewport] = useState({
     center: [-74.009, 40.7128],
     zoom: 14,
@@ -25,7 +26,12 @@ const Module2 = () => {
   // New state to control if source/destination selection is enabled
   const [enableSelection, setEnableSelection] = useState(false);
 
+  // State to store graph data
+  const [graph, setGraph] = useState(new Graph());
+
+  // Map initialization and event handling
   useEffect(() => {
+    // Initialize the map only once (on first render)
     const mapInstance = new mapboxgl.Map({
       container: mapContainerRef.current,
       style: 'mapbox://styles/mapbox/streets-v12',
@@ -34,7 +40,8 @@ const Module2 = () => {
       pitch: viewport.pitch,
       bearing: viewport.bearing,
     });
-
+  
+    // Initialize MapboxDraw control
     const drawInstance = new MapboxDraw({
       displayControlsDefault: false,
       controls: {
@@ -42,11 +49,12 @@ const Module2 = () => {
         trash: true,
       },
     });
+    
     mapInstance.addControl(drawInstance);
     setDraw(drawInstance);
-
     setMap(mapInstance);
-
+  
+    // Update viewport state when the map is moved
     mapInstance.on('moveend', () => {
       setViewport({
         center: mapInstance.getCenter(),
@@ -55,24 +63,11 @@ const Module2 = () => {
         bearing: mapInstance.getBearing(),
       });
     });
-
-    mapInstance.on('click', (event) => {
-      if (enableSelection) {
-        const { lngLat } = event;
-
-        // Check if source or destination should be set based on which one is empty
-        if (!sourceCoordinates) {
-          setSourceCoordinates(`${lngLat.lng.toFixed(4)}, ${lngLat.lat.toFixed(4)}`);
-          mapInstance.flyTo({ center: lngLat, essential: true });
-        } else if (!destinationCoordinates) {
-          setDestinationCoordinates(`${lngLat.lng.toFixed(4)}, ${lngLat.lat.toFixed(4)}`);
-          mapInstance.flyTo({ center: lngLat, essential: true });
-        }
-      }
-    });
-
-    return () => mapInstance.remove();
-  }, [sourceCoordinates, destinationCoordinates, enableSelection]);
+  
+    return () => mapInstance.remove(); // Cleanup on component unmount
+  }, []); // Empty dependency array ensures this useEffect only runs once
+  
+  
 
   const setRoute = () => {
     if (draw) {
@@ -105,75 +100,116 @@ const Module2 = () => {
     }
   };
 
+  const convertRoutesToGraph = () => {
+    const newGraph = new Graph();
+
+    routes.forEach((route) => {
+      for (let i = 0; i < route.length - 1; i++) {
+        const from = route[i];
+        const to = route[i + 1];
+
+        newGraph.setNode(`${from[0]},${from[1]}`);
+        newGraph.setNode(`${to[0]},${to[1]}`);
+        newGraph.setEdge(`${from[0]},${from[1]}`, `${to[0]},${to[1]}`, {
+          weight: Math.sqrt(
+            Math.pow(to[0] - from[0], 2) + Math.pow(to[1] - from[1], 2)
+          ),
+        });
+      }
+    });
+
+    setGraph(newGraph);
+    console.log('Graph:', newGraph);
+  };
+
+  const findShortestPath = () => {
+    // Ensure both source and destination coordinates are set and are not empty
+    if (!sourceCoordinates || !destinationCoordinates) {
+      alert('Please select both source and destination coordinates.');
+      return;
+    }
+  
+    // Log the coordinates to check their format before splitting
+    console.log('Source Coordinates:', sourceCoordinates);
+    console.log('Destination Coordinates:', destinationCoordinates);
+  
+    // Split the coordinates into lat/lng (ensure they are properly formatted)
+    const sourceNode = sourceCoordinates.split(',').map(Number);
+    const destinationNode = destinationCoordinates.split(',').map(Number);
+  
+    // Log the parsed coordinates to verify the split works
+    console.log('Parsed Source Node:', sourceNode);
+    console.log('Parsed Destination Node:', destinationNode);
+  
+    if (sourceNode.length !== 2 || destinationNode.length !== 2) {
+      alert('Invalid coordinates format.');
+      return;
+    }
+  
+    const start = `${sourceNode[0]},${sourceNode[1]}`;
+    const end = `${destinationNode[0]},${destinationNode[1]}`;
+  
+    try {
+      // Using Dijkstra to find the shortest path
+      const dijkstraResult = alg.dijkstra(graph, start);  // Use alg.dijkstra here
+      const path = [];
+  
+      let currentNode = end;
+      while (currentNode !== start) {
+        path.unshift(currentNode);  // Prepend to get the correct order
+        currentNode = dijkstraResult.predecessors[currentNode];
+        if (!currentNode) {
+          alert('No path found.');
+          return;
+        }
+      }
+  
+      path.unshift(start);  // Add the start node at the beginning
+  
+      console.log('Shortest Path:', path);
+    } catch (error) {
+      alert('Error finding the shortest path.');
+      console.log(error);
+    }
+  };
+  
+
   const logWaypoints = () => {
-    console.log("All previously added waypoints:");
+    console.log('All previously added waypoints:');
     routes.forEach((route, index) => {
       console.log(`Route ${index + 1}:`, route);
     });
   };
 
-  // Function to calculate the shortest route using Mapbox Directions API
-  // Function to calculate the shortest route using Mapbox Directions API
-const calculateShortestRoute = () => {
-  if (sourceCoordinates && destinationCoordinates) {
-    const [sourceLng, sourceLat] = sourceCoordinates.split(',').map(Number);
-    const [destinationLng, destinationLat] = destinationCoordinates.split(',').map(Number);
-
-    // Collect all waypoints (source + custom waypoints + destination)
-    const waypoints = [
-      [sourceLng, sourceLat],   // Source coordinates
-      ...routes.flat(),         // Flattening all custom route waypoints
-      [destinationLng, destinationLat],  // Destination coordinates
-    ];
-
-    // Construct Directions API URL with multiple waypoints
-    const waypointsString = waypoints.map((point) => point.join(',')).join(';');
-    const directionsUrl = `https://api.mapbox.com/directions/v5/mapbox/driving/${waypointsString}?geometries=geojson&access_token=${mapboxgl.accessToken}`;
-
-    // Fetch the directions
-    fetch(directionsUrl)
-      .then(response => response.json())
-      .then(data => {
-        if (data.routes && data.routes.length > 0) {
-          const shortestRoute = data.routes[0].geometry;
-
-          // Draw the shortest route on the map
-          if (map) {
-            map.addSource('shortestRoute', {
-              type: 'geojson',
-              data: {
-                type: 'Feature',
-                geometry: shortestRoute,
-              },
-            });
-
-            map.addLayer({
-              id: 'shortestRoute',
-              type: 'line',
-              source: 'shortestRoute',
-              paint: {
-                'line-color': '#0000FF', // Blue color for the shortest route
-                'line-width': 4,
-              },
-            });
-          }
-        } else {
-          console.log('No route found');
-        }
-      })
-      .catch(error => {
-        console.error('Error fetching directions:', error);
-      });
-  } else {
-    console.log("Source or destination is not set.");
-  }
-};
-
-  
-
   const toggleSelectionMode = () => {
     setEnableSelection(!enableSelection);
   };
+
+  const handleMapClick = (event) => {
+    if (enableSelection) {
+      const { lngLat } = event;
+
+      // Check if source or destination should be set based on which one is empty
+      if (!sourceCoordinates) {
+        setSourceCoordinates(`${lngLat.lng.toFixed(4)}, ${lngLat.lat.toFixed(4)}`);
+      } else if (!destinationCoordinates) {
+        setDestinationCoordinates(`${lngLat.lng.toFixed(4)}, ${lngLat.lat.toFixed(4)}`);
+      }
+      setEnableSelection(false); // Disable selection after both coordinates are set
+    }
+  };
+
+  useEffect(() => {
+    if (map) {
+      map.on('click', handleMapClick);
+    }
+
+    return () => {
+      if (map) {
+        map.off('click', handleMapClick);
+      }
+    };
+  }, [map, enableSelection]);
 
   return (
     <div>
@@ -225,15 +261,18 @@ const calculateShortestRoute = () => {
         <button className="btn btn-success mb-3" onClick={setRoute}>
           Set Route
         </button>
+        <button className="btn btn-primary mb-3" onClick={convertRoutesToGraph}>
+          Convert Routes to Graph
+        </button>
+        <button className="btn btn-info mb-3" onClick={findShortestPath}>
+          Find Shortest Path
+        </button>
         <button className="btn btn-info" onClick={logWaypoints}>
           Log All Waypoints
-        </button>
-        <button className="btn btn-primary mb-3" onClick={calculateShortestRoute}>
-          Draw Shortest Route
         </button>
       </div>
     </div>
   );
 };
 
-export default Module2;
+export default ShortestRouteFinder;
