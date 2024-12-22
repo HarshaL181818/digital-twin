@@ -1,73 +1,125 @@
 import React, { useState, useEffect, useRef } from 'react';
 import mapboxgl from 'mapbox-gl';
-import MapboxDraw from '@mapbox/mapbox-gl-draw';
 import * as THREE from 'three';
 import 'mapbox-gl/dist/mapbox-gl.css';
-import '@mapbox/mapbox-gl-draw/dist/mapbox-gl-draw.css';
 
 mapboxgl.accessToken = process.env.REACT_APP_MAPBOX_TOKEN;
 
-const Module1 = () => {
-    const mapContainerRef = useRef(null);
-  const [map, setMap] = useState(null);
-  const [polygon, setPolygon] = useState(null);
+// IndexedDB setup and helper functions
+const initDB = () => {
+  return new Promise((resolve, reject) => {
+    const request = indexedDB.open('BuildingsDB', 1);
 
+    request.onerror = () => reject(request.error);
+    request.onsuccess = () => resolve(request.result);
+
+    request.onupgradeneeded = (event) => {
+      const db = event.target.result;
+      if (!db.objectStoreNames.contains('buildings')) {
+        const store = db.createObjectStore('buildings', { keyPath: 'id' });
+        store.createIndex('location', 'location', { unique: false });
+      }
+    };
+  });
+};
+
+const Module1 = () => {
+  const mapContainerRef = useRef(null);
+  const [map, setMap] = useState(null);
+  const [clickedLocation, setClickedLocation] = useState(null);
+  const [buildingWidth, setBuildingWidth] = useState(30);
+  const [buildingHeight, setBuildingHeight] = useState(50);
+  const [buildingColor, setBuildingColor] = useState('#ff0000');
+  const [buildings, setBuildings] = useState([]);
+  const [selectedBuilding, setSelectedBuilding] = useState(null);
+  const [db, setDB] = useState(null);
+  const [buildingRotation, setBuildingRotation] = useState(0);
   const rendererRef = useRef(null);
 
-
+  // Initialize IndexedDB
   useEffect(() => {
-    // Initialize Mapbox map
-    const mapInstance = new mapboxgl.Map({
-      container: mapContainerRef.current,
-      style: 'mapbox://styles/mapbox/streets-v11', // Map style
-      center: [77.5946, 12.9716], // Bengaluru coordinates
-      zoom: 15, // Initial zoom level
-      pitch: 60, // Tilt the map for 3D view
-      bearing: -45, // Rotate the map for perspective
-      antialias: true, // Enable antialiasing for better visuals
+    initDB().then(database => setDB(database));
+  }, []);
+
+  // Load buildings from IndexedDB
+  const loadBuildings = async () => {
+    if (!db || !map) return;
+
+    const transaction = db.transaction(['buildings'], 'readonly');
+    const store = transaction.objectStore('buildings');
+    const request = store.getAll();
+
+    request.onsuccess = () => {
+      const loadedBuildings = request.result;
+      setBuildings(loadedBuildings);
+      
+      // Display all buildings on the map
+      loadedBuildings.forEach(building => {
+        displayBuilding(building);
+      });
+    };
+  };
+
+  // Load buildings when db and map are ready
+  useEffect(() => {
+    if (db && map) {
+      loadBuildings();
+    }
+  }, [db, map]);
+
+  const displayBuilding = (building) => {
+    if (!map) return;
+
+    const buildingId = `building-${building.id}`;
+
+    // Remove existing building if it exists
+    if (map.getLayer(buildingId)) {
+      map.removeLayer(buildingId);
+      map.removeSource(buildingId);
+    }
+
+    // Add building to map
+    map.addSource(buildingId, {
+      type: 'geojson',
+      data: {
+        type: 'Feature',
+        geometry: {
+          type: 'Polygon',
+          coordinates: building.coordinates
+        }
+      }
     });
 
-    // Add MapboxDraw for polygon drawing
-    // Add MapboxDraw for polygon drawing
-const draw = new MapboxDraw({
-  displayControlsDefault: false,
-  controls: {
-    polygon: true,
-    trash: true,
-  },
-});
-mapInstance.addControl(draw);
+    map.addLayer({
+      id: buildingId,
+      type: 'fill-extrusion',
+      source: buildingId,
+      paint: {
+        'fill-extrusion-color': building.color,
+        'fill-extrusion-height': building.height,
+        'fill-extrusion-opacity': 0.8,
+      }
+    });
+  };
 
-// Handle polygon creation
-mapInstance.on('draw.create', (e) => {
-  const data = draw.getAll();
-  if (data && data.features.length > 0) {
-    const polygonData = data.features[0].geometry.coordinates;
-    console.log('Polygon Coordinates:', polygonData);
-    setPolygon(polygonData); // Save the new polygon data
+  // Initialize map
+  useEffect(() => {
+    const mapInstance = new mapboxgl.Map({
+      container: mapContainerRef.current,
+      style: 'mapbox://styles/mapbox/streets-v11',
+      center: [77.5946, 12.9716],
+      zoom: 15,
+      pitch: 60,
+      bearing: -45,
+      antialias: true,
+    });
 
-    // Remove the drawn polygon after storing the coordinates
-    draw.deleteAll();
-    console.log('Polygon deleted after being saved');
-  }
-});
+    mapInstance.on('click', (e) => {
+      const coordinates = [e.lngLat.lng, e.lngLat.lat];
+      setClickedLocation(coordinates);
+      updateClickMarker(mapInstance, coordinates);
+    });
 
-// Handle polygon updates
-mapInstance.on('draw.update', (e) => {
-  const data = draw.getAll();
-  if (data && data.features.length > 0) {
-    const polygonData = data.features[0].geometry.coordinates;
-    console.log('Updated Polygon Coordinates:', polygonData);
-    setPolygon(polygonData); // Update the polygon data in state
-
-    // Remove the updated polygon after saving the new coordinates
-    draw.deleteAll();
-    console.log('Updated polygon deleted after being saved');
-  }
-});
-
-
-    // Add 3D building layer
     mapInstance.on('style.load', () => {
       mapInstance.addLayer({
         id: '3d-buildings',
@@ -83,135 +135,308 @@ mapInstance.on('draw.update', (e) => {
       });
     });
 
-    // Set up Three.js renderer
-    mapInstance.on('load', () => {
-      const canvas = mapInstance.getCanvas();
-      const renderer = new THREE.WebGLRenderer({
-        canvas,
-        context: mapInstance.painter.context.gl,
-      });
-      renderer.autoClear = false;
-      rendererRef.current = renderer;
-
-      const scene = new THREE.Scene();
-      const camera = new THREE.PerspectiveCamera(
-        75,
-        canvas.clientWidth / canvas.clientHeight,
-        0.1,
-        1000
-      );
-
-      // Add a rotating cube for demo
-      const geometry = new THREE.BoxGeometry(10, 10, 10);
-      const material = new THREE.MeshBasicMaterial({ color: 0x00ff00 });
-      const cube = new THREE.Mesh(geometry, material);
-      scene.add(cube);
-      camera.position.set(0, 0, 50);
-
-      // Synchronize Three.js rendering with Mapbox
-      const animate = () => {
-        cube.rotation.x += 0.01;
-        cube.rotation.y += 0.01;
-        renderer.render(scene, camera);
-      };
-
-      mapInstance.on('render', animate);
-    });
-
     setMap(mapInstance);
 
-    return () => mapInstance.remove(); // Clean up on component unmount
+    return () => mapInstance.remove();
   }, []);
 
-  // Save polygon function
-  const handleSavePolygon = () => {
-    if (!polygon || !map) {
-      console.log('No polygon selected or map is not initialized');
-      return;
+  const updateClickMarker = (mapInstance, coordinates) => {
+    if (mapInstance.getLayer('click-point')) {
+      mapInstance.removeLayer('click-point');
+      mapInstance.removeSource('click-point');
     }
 
-    if (map.getSource('selected-polygon')) {
-      map.removeLayer('selected-polygon-fill');
-      map.removeLayer('selected-polygon-outline');
-      map.removeSource('selected-polygon');
-    }
-
-    map.addSource('selected-polygon', {
+    mapInstance.addSource('click-point', {
       type: 'geojson',
       data: {
         type: 'Feature',
         geometry: {
-          type: 'Polygon',
-          coordinates: polygon,
-        },
-      },
+          type: 'Point',
+          coordinates: coordinates
+        }
+      }
     });
 
-    map.addLayer({
-      id: 'selected-polygon-fill',
-      type: 'fill',
-      source: 'selected-polygon',
+    mapInstance.addLayer({
+      id: 'click-point',
+      type: 'circle',
+      source: 'click-point',
       paint: {
-        'fill-color': '#0080ff',
-        'fill-opacity': 0.5,
-      },
+        'circle-radius': 6,
+        'circle-color': buildingColor
+      }
     });
-
-    map.addLayer({
-      id: 'selected-polygon-outline',
-      type: 'line',
-      source: 'selected-polygon',
-      paint: {
-        'line-color': '#000',
-        'line-width': 3,
-      },
-    });
-
-    console.log('Polygon saved and added to the map');
   };
 
-  // Add building function
-  const handleAddBuilding = () => {
-    if (!polygon || !map) {
-      console.log('No polygon selected or map is not initialized');
-      return;
+  const handleAddBuilding = async () => {
+    if (!clickedLocation || !map || !db) return;
+
+    const size = buildingWidth / 111111;
+    const coordinates = getRotatedCoordinates(clickedLocation, size, buildingRotation);
+
+    const building = {
+      id: Date.now().toString(),
+      location: clickedLocation,
+      coordinates,
+      width: buildingWidth,
+      height: buildingHeight,
+      color: buildingColor,
+      rotation: buildingRotation,
+      createdAt: new Date().toISOString()
+    };
+
+    // Save to IndexedDB
+    const transaction = db.transaction(['buildings'], 'readwrite');
+    const store = transaction.objectStore('buildings');
+    await store.add(building);
+
+    // Update state and display
+    setBuildings(prev => [...prev, building]);
+    displayBuilding(building);
+    setClickedLocation(null);
+
+    // Remove click marker
+    if (map.getLayer('click-point')) {
+      map.removeLayer('click-point');
+      map.removeSource('click-point');
+    }
+  }
+
+  const handleDeleteBuilding = async (buildingId) => {
+    if (!db || !map) return;
+
+    // Remove from IndexedDB
+    const transaction = db.transaction(['buildings'], 'readwrite');
+    const store = transaction.objectStore('buildings');
+    await store.delete(buildingId);
+
+    // Remove from map
+    if (map.getLayer(`building-${buildingId}`)) {
+      map.removeLayer(`building-${buildingId}`);
+      map.removeSource(`building-${buildingId}`);
     }
 
-    if (map.getSource('building-polygon')) {
-      map.removeLayer('building-polygon-layer');
-      map.removeSource('building-polygon');
-    }
+    // Update state
+    setBuildings(prev => prev.filter(b => b.id !== buildingId));
+    setSelectedBuilding(null);
+  };
 
-    map.addSource('building-polygon', {
-      type: 'geojson',
-      data: {
-        type: 'Feature',
-        geometry: {
-          type: 'Polygon',
-          coordinates: polygon,
-        },
-      },
+  const handleUpdateBuilding = async () => {
+    if (!selectedBuilding || !db || !map) return;
+
+    const size = buildingWidth / 111111;
+    const coordinates = getRotatedCoordinates(
+      selectedBuilding.location,
+      size,
+      buildingRotation
+    );
+
+    const updatedBuilding = {
+      ...selectedBuilding,
+      width: buildingWidth,
+      height: buildingHeight,
+      color: buildingColor,
+      rotation: buildingRotation,
+      coordinates
+    };
+
+    // Update in IndexedDB
+    const transaction = db.transaction(['buildings'], 'readwrite');
+    const store = transaction.objectStore('buildings');
+    await store.put(updatedBuilding);
+
+    // Update display
+    displayBuilding(updatedBuilding);
+
+    // Update state
+    setBuildings(prev => prev.map(b => 
+      b.id === selectedBuilding.id ? updatedBuilding : b
+    ));
+    setSelectedBuilding(null);
+  };
+
+  const handleSelectBuilding = (building) => {
+    setSelectedBuilding(building);
+    setBuildingWidth(building.width);
+    setBuildingHeight(building.height);
+    setBuildingColor(building.color);
+    setBuildingRotation(building.rotation || 0);
+  };
+
+  const getRotatedCoordinates = (center, size, rotation) => {
+    // Convert rotation to radians
+    const rad = (rotation * Math.PI) / 180;
+    
+    // Calculate corner points before rotation
+    const points = [
+      [-size/2, -size/2], // top left
+      [size/2, -size/2],  // top right
+      [size/2, size/2],   // bottom right
+      [-size/2, size/2],  // bottom left
+    ];
+
+    const rotatedPoints = points.map(([x, y]) => {
+      const rotatedX = x * Math.cos(rad) - y * Math.sin(rad);
+      const rotatedY = x * Math.sin(rad) + y * Math.cos(rad);
+      return [
+        center[0] + rotatedX,
+        center[1] + rotatedY
+      ];
     });
 
-    map.addLayer({
-      id: 'building-polygon-layer',
-      type: 'fill-extrusion',
-      source: 'building-polygon',
-      paint: {
-        'fill-extrusion-color': '#ff0000',
-        'fill-extrusion-height': 50, // Set building height
-        'fill-extrusion-opacity': 0.8,
-      },
-    });
+    return [
+      [...rotatedPoints, rotatedPoints[0]]
+    ];
+  };
 
-    console.log('Building added to the map');
+  // Styles
+  const containerStyle = {
+    display: 'flex',
+    height: '100vh',
+    gap: '20px',
+    padding: '20px'
+  };
+
+  const mapStyle = {
+    flexGrow: 1,
+    height: '100%'
+  };
+
+  const sidebarStyle = {
+    width: '300px',
+    backgroundColor: '#f8f9fa',
+    padding: '20px',
+    borderRadius: '8px',
+    overflowY: 'auto'
+  };
+
+  const controlStyle = {
+    marginBottom: '15px'
+  };
+
+  const buttonStyle = {
+    padding: '8px 16px',
+    backgroundColor: '#007bff',
+    color: 'white',
+    border: 'none',
+    borderRadius: '4px',
+    cursor: 'pointer',
+    marginTop: '10px'
+  };
+
+  const buildingListStyle = {
+    listStyle: 'none',
+    padding: 0
+  };
+
+  const buildingItemStyle = {
+    padding: '10px',
+    border: '1px solid #ddd',
+    marginBottom: '5px',
+    borderRadius: '4px',
+    cursor: 'pointer'
   };
 
   return (
-    <div>
-      <div ref={mapContainerRef} style={{ width: '100%', height: '500px' }} />
-      <button onClick={handleSavePolygon}>Save Polygon</button>
-      <button onClick={handleAddBuilding}>Add Building</button>
+    <div style={containerStyle}>
+      <div style={mapStyle} ref={mapContainerRef} />
+      <div style={sidebarStyle}>
+        <h3>Building Controls</h3>
+        <div style={controlStyle}>
+          <label>Width (m): </label>
+          <input
+            type="number"
+            value={buildingWidth}
+            onChange={(e) => setBuildingWidth(Number(e.target.value))}
+            min="1"
+            max="100"
+          />
+        </div>
+        <div style={controlStyle}>
+          <label>Height (m): </label>
+          <input
+            type="number"
+            value={buildingHeight}
+            onChange={(e) => setBuildingHeight(Number(e.target.value))}
+            min="1"
+            max="500"
+          />
+        </div>
+        <div style={controlStyle}>
+          <label>Rotation (degrees): </label>
+          <input
+            type="number"
+            value={buildingRotation}
+            onChange={(e) => setBuildingRotation(Number(e.target.value))}
+            min="0"
+            max="360"
+            step="5"
+          />
+          <input
+            type="range"
+            value={buildingRotation}
+            onChange={(e) => setBuildingRotation(Number(e.target.value))}
+            min="0"
+            max="360"
+            step="5"
+            style={{ width: '100%', marginTop: '5px' }}
+          />
+        </div>
+        <div style={controlStyle}>
+          <label>Color: </label>
+          <input
+            type="color"
+            value={buildingColor}
+            onChange={(e) => setBuildingColor(e.target.value)}
+          />
+        </div>
+        {selectedBuilding ? (
+          <>
+            <button style={buttonStyle} onClick={handleUpdateBuilding}>
+              Update Building
+            </button>
+            <button 
+              style={{...buttonStyle, backgroundColor: '#dc3545', marginLeft: '10px'}} 
+              onClick={() => handleDeleteBuilding(selectedBuilding.id)}
+            >
+              Delete Building
+            </button>
+          </>
+        ) : (
+          <button 
+            style={buttonStyle} 
+            onClick={handleAddBuilding}
+            disabled={!clickedLocation}
+          >
+            Add Building
+          </button>
+        )}
+
+        <h3>Buildings List</h3>
+        <ul style={buildingListStyle}>
+          {buildings.map(building => (
+            <li 
+              key={building.id} 
+              style={{
+                ...buildingItemStyle,
+                backgroundColor: selectedBuilding?.id === building.id ? '#e9ecef' : 'white'
+              }}
+              onClick={() => handleSelectBuilding(building)}
+            >
+              Building {building.id.slice(-4)}
+              <div style={{
+                width: '20px',
+                height: '20px',
+                backgroundColor: building.color,
+                display: 'inline-block',
+                marginLeft: '10px',
+                border: '1px solid #ddd',
+                transform: `rotate(${building.rotation || 0}deg)`
+              }} />
+            </li>
+          ))}
+        </ul>
+      </div>
     </div>
   );
 };
