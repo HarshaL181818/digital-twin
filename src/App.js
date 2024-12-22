@@ -5,6 +5,8 @@ import Module1 from './components/Module1';  // The page for Module1
 import Module2 from './components/Module2';  // The page for Module2
 import Visualization from './components/Visualization';  // Your Visualization page
 import ShortestRouteFinder from './components/ShortestRouteFinder';
+import Pollution from './components/Pollution';
+import Traffic from './components/Traffic';
 
 function App() {
   return (
@@ -15,6 +17,8 @@ function App() {
         <Route path="/module2" element={<Module2 />} />
         <Route path="/Visualization" element={<Visualization />} />
         <Route path="/Shortest" element={<ShortestRouteFinder />} />
+        <Route path="/pollution" element={<Pollution />} />
+        <Route path="/traffic" element={<Traffic />} />
       </Routes>
     </Router>
   );
