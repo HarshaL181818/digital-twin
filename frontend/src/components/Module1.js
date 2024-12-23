@@ -1,27 +1,9 @@
 import React, { useState, useEffect, useRef } from 'react';
+import axios from 'axios';
 import mapboxgl from 'mapbox-gl';
-import * as THREE from 'three';
 import 'mapbox-gl/dist/mapbox-gl.css';
 
 mapboxgl.accessToken = process.env.REACT_APP_MAPBOX_TOKEN;
-
-// IndexedDB setup and helper functions
-const initDB = () => {
-  return new Promise((resolve, reject) => {
-    const request = indexedDB.open('BuildingsDB', 1);
-
-    request.onerror = () => reject(request.error);
-    request.onsuccess = () => resolve(request.result);
-
-    request.onupgradeneeded = (event) => {
-      const db = event.target.result;
-      if (!db.objectStoreNames.contains('buildings')) {
-        const store = db.createObjectStore('buildings', { keyPath: 'id' });
-        store.createIndex('location', 'location', { unique: false });
-      }
-    };
-  });
-};
 
 const Module1 = () => {
   const mapContainerRef = useRef(null);
@@ -32,81 +14,159 @@ const Module1 = () => {
   const [buildingColor, setBuildingColor] = useState('#ff0000');
   const [buildings, setBuildings] = useState([]);
   const [selectedBuilding, setSelectedBuilding] = useState(null);
-  const [db, setDB] = useState(null);
   const [buildingRotation, setBuildingRotation] = useState(0);
-  const rendererRef = useRef(null);
 
-  // Initialize IndexedDB
-  useEffect(() => {
-    initDB().then(database => setDB(database));
-  }, []);
+  const API_BASE_URL = 'http://localhost:8080/api/buildings';
 
-  // Load buildings from IndexedDB
-  const loadBuildings = async () => {
-    if (!db || !map) return;
-
-    const transaction = db.transaction(['buildings'], 'readonly');
-    const store = transaction.objectStore('buildings');
-    const request = store.getAll();
-
-    request.onsuccess = () => {
-      const loadedBuildings = request.result;
-      setBuildings(loadedBuildings);
-      
-      // Display all buildings on the map
-      loadedBuildings.forEach(building => {
-        displayBuilding(building);
-      });
-    };
+  const containerStyle = {
+    display: 'flex',
+    height: '100vh',
+    gap: '20px',
+    padding: '20px',
   };
 
-  // Load buildings when db and map are ready
+  const mapStyle = {
+    flexGrow: 1,
+    height: '100%',
+  };
+
+  const sidebarStyle = {
+    width: '300px',
+    backgroundColor: '#f8f9fa',
+    padding: '20px',
+    borderRadius: '8px',
+    overflowY: 'auto',
+  };
+
+  const controlStyle = {
+    marginBottom: '15px',
+  };
+
+  const buttonStyle = {
+    padding: '8px 16px',
+    backgroundColor: '#007bff',
+    color: 'white',
+    border: 'none',
+    borderRadius: '4px',
+    cursor: 'pointer',
+    marginTop: '10px',
+  };
+
+  const buildingListStyle = {
+    listStyle: 'none',
+    padding: 0,
+  };
+
+  const buildingItemStyle = {
+    padding: '10px',
+    border: '1px solid #ddd',
+    marginBottom: '5px',
+    borderRadius: '4px',
+    cursor: 'pointer',
+  };
+
+  // Fetch buildings from the backend
+  const loadBuildings = async () => {
+    try {
+      const response = await axios.get(API_BASE_URL);
+      setBuildings(response.data);
+
+      // Display all buildings on the map
+      response.data.forEach((building) => {
+        displayBuilding(building);
+      });
+    } catch (error) {
+      console.error('Failed to load buildings:', error);
+    }
+  };
+
   useEffect(() => {
-    if (db && map) {
+    if (map) {
       loadBuildings();
     }
-  }, [db, map]);
+  }, [map]);
 
   const displayBuilding = (building) => {
     if (!map) return;
-
+  
     const buildingId = `building-${building.id}`;
-
-    // Remove existing building if it exists
-    if (map.getLayer(buildingId)) {
-      map.removeLayer(buildingId);
-      map.removeSource(buildingId);
-    }
-
-    // Add building to map
+    const center = building.coordinates[0].reduce((acc, curr) => [
+      acc[0] + curr[0],
+      acc[1] + curr[1]
+    ], [0, 0]).map(coord => coord / building.coordinates[0].length);
+  
+    // Remove existing layers and sources
+    [buildingId, `${buildingId}-label`].forEach(id => {
+      if (map.getLayer(id)) map.removeLayer(id);
+      if (map.getSource(id)) map.removeSource(id);
+    });
+  
+    // Add building
     map.addSource(buildingId, {
       type: 'geojson',
       data: {
         type: 'Feature',
+        properties: {
+          height: building.height,
+          color: building.color,
+          base: 0
+        },
         geometry: {
           type: 'Polygon',
-          coordinates: building.coordinates
-        }
-      }
+          coordinates: building.coordinates,
+        },
+      },
     });
-
+  
     map.addLayer({
       id: buildingId,
       type: 'fill-extrusion',
       source: buildingId,
       paint: {
         'fill-extrusion-color': building.color,
-        'fill-extrusion-height': building.height,
+        'fill-extrusion-height': ['get', 'height'],
+        'fill-extrusion-base': ['get', 'base'],
         'fill-extrusion-opacity': 0.8,
+      },
+    });
+  
+    // Add ID label source and layer
+    map.addSource(`${buildingId}-label`, {
+      type: 'geojson',
+      data: {
+        type: 'Feature',
+        geometry: {
+          type: 'Point',
+          coordinates: center
+        },
+        properties: {
+          id: building.id
+        }
+      }
+    });
+  
+    map.addLayer({
+      id: `${buildingId}-label`,
+      type: 'symbol',
+      source: `${buildingId}-label`,
+      layout: {
+        'text-field': `#${building.id}`,
+        'text-anchor': 'center',
+        'text-size': 16,
+        'text-allow-overlap': true
+      },
+      paint: {
+        'text-color': '#000000',
+        'text-halo-color': '#ffffff',
+        'text-halo-width': 2
       }
     });
   };
 
-  // Initialize map
   useEffect(() => {
     const mapInstance = new mapboxgl.Map({
       container: mapContainerRef.current,
-      style: 'mapbox://styles/mapbox/streets-v11',
+      style: 'mapbox://styles/mapbox/light-v11', // Changed to light style for better visibility
       center: [77.5946, 12.9716],
       zoom: 15,
       pitch: 60,
@@ -114,25 +174,44 @@ const Module1 = () => {
       antialias: true,
     });
 
+    mapInstance.on('load', () => {
+      // Add 3D building layer settings
+      mapInstance.addLayer({
+        'id': 'add-3d-buildings',
+        'source': 'composite',
+        'source-layer': 'building',
+        'filter': ['==', 'extrude', 'true'],
+        'type': 'fill-extrusion',
+        'minzoom': 15,
+        'paint': {
+          'fill-extrusion-color': '#aaa',
+          'fill-extrusion-height': [
+            'interpolate',
+            ['linear'],
+            ['zoom'],
+            15,
+            0,
+            15.05,
+            ['get', 'height']
+          ],
+          'fill-extrusion-base': [
+            'interpolate',
+            ['linear'],
+            ['zoom'],
+            15,
+            0,
+            15.05,
+            ['get', 'min_height']
+          ],
+          'fill-extrusion-opacity': 0.6
+        }
+      }, 'waterway-label');
+    });
+
     mapInstance.on('click', (e) => {
       const coordinates = [e.lngLat.lng, e.lngLat.lat];
       setClickedLocation(coordinates);
       updateClickMarker(mapInstance, coordinates);
-    });
-
-    mapInstance.on('style.load', () => {
-      mapInstance.addLayer({
-        id: '3d-buildings',
-        source: 'composite',
-        'source-layer': 'building',
-        type: 'fill-extrusion',
-        paint: {
-          'fill-extrusion-color': '#aaa',
-          'fill-extrusion-height': ['get', 'height'],
-          'fill-extrusion-base': ['get', 'min_height'],
-          'fill-extrusion-opacity': 0.6,
-        },
-      });
     });
 
     setMap(mapInstance);
@@ -152,9 +231,9 @@ const Module1 = () => {
         type: 'Feature',
         geometry: {
           type: 'Point',
-          coordinates: coordinates
-        }
-      }
+          coordinates: coordinates,
+        },
+      },
     });
 
     mapInstance.addLayer({
@@ -163,66 +242,56 @@ const Module1 = () => {
       source: 'click-point',
       paint: {
         'circle-radius': 6,
-        'circle-color': buildingColor
-      }
+        'circle-color': buildingColor,
+      },
     });
   };
 
   const handleAddBuilding = async () => {
-    if (!clickedLocation || !map || !db) return;
+    if (!clickedLocation) return;
 
     const size = buildingWidth / 111111;
     const coordinates = getRotatedCoordinates(clickedLocation, size, buildingRotation);
 
     const building = {
-      id: Date.now().toString(),
       location: clickedLocation,
       coordinates,
       width: buildingWidth,
       height: buildingHeight,
       color: buildingColor,
       rotation: buildingRotation,
-      createdAt: new Date().toISOString()
     };
 
-    // Save to IndexedDB
-    const transaction = db.transaction(['buildings'], 'readwrite');
-    const store = transaction.objectStore('buildings');
-    await store.add(building);
-
-    // Update state and display
-    setBuildings(prev => [...prev, building]);
-    displayBuilding(building);
-    setClickedLocation(null);
-
-    // Remove click marker
-    if (map.getLayer('click-point')) {
-      map.removeLayer('click-point');
-      map.removeSource('click-point');
+    try {
+      const response = await axios.post(API_BASE_URL, building);
+      setBuildings((prev) => [...prev, response.data]);
+      displayBuilding(response.data);
+      setClickedLocation(null);
+    } catch (error) {
+      if (error.response) {
+        console.error('Failed to add building:', error.response.data);
+      } else {
+        console.error('Network error or unexpected issue:', error.message);
+      }
     }
-  }
+  };
 
   const handleDeleteBuilding = async (buildingId) => {
-    if (!db || !map) return;
-
-    // Remove from IndexedDB
-    const transaction = db.transaction(['buildings'], 'readwrite');
-    const store = transaction.objectStore('buildings');
-    await store.delete(buildingId);
-
-    // Remove from map
-    if (map.getLayer(`building-${buildingId}`)) {
-      map.removeLayer(`building-${buildingId}`);
-      map.removeSource(`building-${buildingId}`);
+    try {
+      await axios.delete(`${API_BASE_URL}/${buildingId}`);
+      if (map.getLayer(`building-${buildingId}`)) {
+        map.removeLayer(`building-${buildingId}`);
+        map.removeSource(`building-${buildingId}`);
+      }
+      setBuildings((prev) => prev.filter((b) => b.id !== buildingId));
+      setSelectedBuilding(null);
+    } catch (error) {
+      console.error('Failed to delete building:', error);
     }
-
-    // Update state
-    setBuildings(prev => prev.filter(b => b.id !== buildingId));
-    setSelectedBuilding(null);
   };
 
   const handleUpdateBuilding = async () => {
-    if (!selectedBuilding || !db || !map) return;
+    if (!selectedBuilding) return;
 
     const size = buildingWidth / 111111;
     const coordinates = getRotatedCoordinates(
@@ -237,22 +306,22 @@ const Module1 = () => {
       height: buildingHeight,
       color: buildingColor,
       rotation: buildingRotation,
-      coordinates
+      coordinates,
     };
 
-    // Update in IndexedDB
-    const transaction = db.transaction(['buildings'], 'readwrite');
-    const store = transaction.objectStore('buildings');
-    await store.put(updatedBuilding);
-
-    // Update display
-    displayBuilding(updatedBuilding);
-
-    // Update state
-    setBuildings(prev => prev.map(b => 
-      b.id === selectedBuilding.id ? updatedBuilding : b
-    ));
-    setSelectedBuilding(null);
+    try {
+      const response = await axios.put(
+        `${API_BASE_URL}/${selectedBuilding.id}`,
+        updatedBuilding
+      );
+      displayBuilding(response.data);
+      setBuildings((prev) =>
+        prev.map((b) => (b.id === selectedBuilding.id ? response.data : b))
+      );
+      setSelectedBuilding(null);
+    } catch (error) {
+      console.error('Failed to update building:', error);
+    }
   };
 
   const handleSelectBuilding = (building) => {
@@ -264,77 +333,20 @@ const Module1 = () => {
   };
 
   const getRotatedCoordinates = (center, size, rotation) => {
-    // Convert rotation to radians
     const rad = (rotation * Math.PI) / 180;
-    
-    // Calculate corner points before rotation
     const points = [
-      [-size/2, -size/2], // top left
-      [size/2, -size/2],  // top right
-      [size/2, size/2],   // bottom right
-      [-size/2, size/2],  // bottom left
+      [-size / 2, -size / 2],
+      [size / 2, -size / 2],
+      [size / 2, size / 2],
+      [-size / 2, size / 2],
     ];
-
-    const rotatedPoints = points.map(([x, y]) => {
-      const rotatedX = x * Math.cos(rad) - y * Math.sin(rad);
-      const rotatedY = x * Math.sin(rad) + y * Math.cos(rad);
-      return [
-        center[0] + rotatedX,
-        center[1] + rotatedY
-      ];
-    });
 
     return [
-      [...rotatedPoints, rotatedPoints[0]]
+      points.map(([x, y]) => [
+        center[0] + x * Math.cos(rad) - y * Math.sin(rad),
+        center[1] + x * Math.sin(rad) + y * Math.cos(rad),
+      ]),
     ];
-  };
-
-  // Styles
-  const containerStyle = {
-    display: 'flex',
-    height: '100vh',
-    gap: '20px',
-    padding: '20px'
-  };
-
-  const mapStyle = {
-    flexGrow: 1,
-    height: '100%'
-  };
-
-  const sidebarStyle = {
-    width: '300px',
-    backgroundColor: '#f8f9fa',
-    padding: '20px',
-    borderRadius: '8px',
-    overflowY: 'auto'
-  };
-
-  const controlStyle = {
-    marginBottom: '15px'
-  };
-
-  const buttonStyle = {
-    padding: '8px 16px',
-    backgroundColor: '#007bff',
-    color: 'white',
-    border: 'none',
-    borderRadius: '4px',
-    cursor: 'pointer',
-    marginTop: '10px'
-  };
-
-  const buildingListStyle = {
-    listStyle: 'none',
-    padding: 0
-  };
-
-  const buildingItemStyle = {
-    padding: '10px',
-    border: '1px solid #ddd',
-    marginBottom: '5px',
-    borderRadius: '4px',
-    cursor: 'pointer'
   };
 
   return (
@@ -359,27 +371,7 @@ const Module1 = () => {
             value={buildingHeight}
             onChange={(e) => setBuildingHeight(Number(e.target.value))}
             min="1"
-            max="500"
-          />
-        </div>
-        <div style={controlStyle}>
-          <label>Rotation (degrees): </label>
-          <input
-            type="number"
-            value={buildingRotation}
-            onChange={(e) => setBuildingRotation(Number(e.target.value))}
-            min="0"
-            max="360"
-            step="5"
-          />
-          <input
-            type="range"
-            value={buildingRotation}
-            onChange={(e) => setBuildingRotation(Number(e.target.value))}
-            min="0"
-            max="360"
-            step="5"
-            style={{ width: '100%', marginTop: '5px' }}
+            max="100"
           />
         </div>
         <div style={controlStyle}>
@@ -390,49 +382,35 @@ const Module1 = () => {
             onChange={(e) => setBuildingColor(e.target.value)}
           />
         </div>
-        {selectedBuilding ? (
+        <button style={buttonStyle} onClick={handleAddBuilding}>
+          Add Building
+        </button>
+        {selectedBuilding && (
           <>
+            <h4>Selected Building</h4>
             <button style={buttonStyle} onClick={handleUpdateBuilding}>
               Update Building
             </button>
-            <button 
-              style={{...buttonStyle, backgroundColor: '#dc3545', marginLeft: '10px'}} 
+            <button
+              style={{
+                ...buttonStyle,
+                backgroundColor: '#dc3545',
+              }}
               onClick={() => handleDeleteBuilding(selectedBuilding.id)}
             >
               Delete Building
             </button>
           </>
-        ) : (
-          <button 
-            style={buttonStyle} 
-            onClick={handleAddBuilding}
-            disabled={!clickedLocation}
-          >
-            Add Building
-          </button>
         )}
-
-        <h3>Buildings List</h3>
+        <h3>List</h3>
         <ul style={buildingListStyle}>
-          {buildings.map(building => (
-            <li 
-              key={building.id} 
-              style={{
-                ...buildingItemStyle,
-                backgroundColor: selectedBuilding?.id === building.id ? '#e9ecef' : 'white'
-              }}
+          {buildings.map((building) => (
+            <li
+              key={building.id}
+              style={buildingItemStyle}
               onClick={() => handleSelectBuilding(building)}
             >
-              Building {building.id.slice(-4)}
-              <div style={{
-                width: '20px',
-                height: '20px',
-                backgroundColor: building.color,
-                display: 'inline-block',
-                marginLeft: '10px',
-                border: '1px solid #ddd',
-                transform: `rotate(${building.rotation || 0}deg)`
-              }} />
+            {building.id}
             </li>
           ))}
         </ul>
